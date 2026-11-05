@@ -1,0 +1,94 @@
+name: tubeclone
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tube
+      POSTGRES_USER: tube
+      POSTGRES_PASSWORD: tube
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tube -d tube"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      target: app
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://tube:tube@db:5432/tube
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      MEDIA_DIR: /data/media
+      FRONTEND_DIST: /app/frontend_dist
+      SEED_DEMO: ${SEED_DEMO:-true}
+      COOKIE_SECURE: "false"
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-1024}
+    volumes:
+      - media:/data/media
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/tubeclone.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  tests:
+    build:
+      context: .
+      target: test
+    profiles: ["test"]
+    environment:
+      DATABASE_URL: sqlite+pysqlite:////tmp/tubeclone-test.db
+      SEED_DEMO: "false"
+      MEDIA_DIR: /tmp/media
+      FRONTEND_DIST: /tmp/frontend
+      JWT_SECRET: test-secret
+      COOKIE_SECURE: "false"
+    volumes:
+      - ./backend/tests:/app/tests:ro
+    command: ["python", "-m", "pytest", "-q", "tests"]
+
+volumes:
+  pgdata:
+  media:
+  prometheus_data:
+  grafana_data:
